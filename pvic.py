@@ -34,7 +34,7 @@ from ops import (
 )
 
 from detr.models import build_model as build_base_detr
-from h_detr.models import build_model as build_advanced_detr
+# from h_detr.models import build_model as build_advanced_detr
 from detr.models.position_encoding import PositionEmbeddingSine
 from detr.util.misc import NestedTensor, nested_tensor_from_tensor_list
 

@@ -143,6 +143,22 @@ class CustomisedDLE(DistributedLearningEngine):
         self.test_dataloader = test_dataloader
 
     def _on_start(self):
+        # SKIP  跳过训练前的评估
+        if self._train_loader.dataset.name == "hicodet":
+            wandb.init(config=self.config)
+            wandb.watch(self._state.net.module)
+            wandb.define_metric("epochs")
+            wandb.define_metric("mAP full", step_metric="epochs", summary="max")
+            wandb.define_metric("mAP rare", step_metric="epochs", summary="max")
+            wandb.define_metric("mAP non_rare", step_metric="epochs", summary="max")
+
+            wandb.define_metric("training_steps")
+            wandb.define_metric("elapsed_time", step_metric="training_steps", summary="max")
+            wandb.define_metric("loss", step_metric="training_steps", summary="min")
+        else:
+            wandb.init(config=self.config)
+        return  # SKIP  跳过训练前的评估
+    
         if self._train_loader.dataset.name == "hicodet":
             ap = self.test_hico()
             if self._rank == 0:
