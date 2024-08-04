@@ -1,0 +1,37 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "train on hicodet",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--pretrained", "checkpoints/detr-r50-hicodet.pth",
+                "--output-dir", "outputs/pvic-detr-r50-hicodet",
+                "--world-size", "1",
+                "--batch-size", "4"
+            ],
+            "env": {
+                "DETR": "base"
+            },
+        },
+        {
+            "name": "test on hicodet",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "main.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--eval",
+                "--resume", "checkpoints/pvic-detr-r50-hicodet.pth",
+                "--world-size", "1",
+                "--batch-size", "1"
+            ],
+            "env": {
+                "DETR": "base"
+            },
+        }
+    ]
+}
