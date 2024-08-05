@@ -1,3 +1,6 @@
+
+__all__ = ['get_normal_and_not_sentences']
+
 HICO_DET_HOI_LABEL_DICT = {
 	0: "board airplane",
 	1: "direct airplane",
@@ -3003,3 +3006,16 @@ HOI_TEXT = {
         "not": "A photo of a person is interacting with a zebra."
     }
 }
+
+
+def get_normal_and_not_sentences():
+    normal_text = []
+    not_text = []
+    for hoi_id, hoi_name in HICO_DET_HOI_LABEL_DICT.items():
+        assert len(hoi_name.split(" ")) == 2
+        action_text, object_text = hoi_name.split(" ")
+        key = f"{action_text}+{object_text}"
+        normal_text.append(HOI_TEXT[key]["normal"])
+        not_text.append(HOI_TEXT[key]["not"])
+    return normal_text, not_text
+
