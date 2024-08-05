@@ -73,6 +73,16 @@ def convert_dict_to_str(data: dict, var_name: str):
     return write_text
 
 
+def get_verb_setence(object_name):
+    normal_text_list = []
+    not_text_list = []
+    for verb_id, verb_text in HICO_DET_VERB_DICT.items():
+        normal_text, not_text = _get_hoi_text(verb_text, object_name)  
+        normal_text_list.append(normal_text)
+        not_text_list.append(not_text)
+    return normal_text_list, not_text_list
+
+
 if __name__ == "__main__":
     import json
     from tqdm import tqdm
