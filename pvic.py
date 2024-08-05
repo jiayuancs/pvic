@@ -17,6 +17,8 @@ from collections import OrderedDict
 from typing import Optional, Tuple, List
 from torchvision.ops import FeaturePyramidNetwork
 
+import clip
+
 from transformers import (
     TransformerEncoder,
     TransformerDecoder,
@@ -152,7 +154,7 @@ class HumanObjectMatcher(nn.Module):
             # Append matched human-object pairs
             ho_queries.append(ho_q)
             paired_indices.append(torch.stack([x_keep, y_keep], dim=1))
-            prior_scores.append(compute_prior_scores(
+            prior_scores.append(compute_prior_scores(  # 形状为(hoi_cnt, 117)
                 x_keep, y_keep, scores, labels, self.num_verbs, self.training,
                 self.obj_to_verb
             ))
@@ -210,6 +212,9 @@ class PViC(nn.Module):
         detector: Tuple[nn.Module, str], postprocessor: nn.Module,
         feature_head: nn.Module, ho_matcher: nn.Module,
         triplet_decoder: nn.Module, num_verbs: int,
+        # hoi 类别文本（TODO: 目前只支持 117 个动词类别文本，不支持使用 600 个 HOI 类别文本）
+        hoi_text,
+        clip_model: nn.Module,
         repr_size: int = 384, human_idx: int = 0,
         # Focal loss hyper-parameters
         alpha: float = 0.5, gamma: float = .1,
@@ -232,7 +237,8 @@ class PViC(nn.Module):
         self.feature_head = feature_head
         self.kv_pe = PositionEmbeddingSine(128, 20, normalize=True)
         self.decoder = triplet_decoder
-        self.binary_classifier = nn.Linear(repr_size, num_verbs)
+        # 替换为 CLIP 分类头
+        # self.binary_classifier = nn.Linear(repr_size, num_verbs)
 
         self.repr_size = repr_size
         self.human_idx = human_idx
@@ -243,6 +249,14 @@ class PViC(nn.Module):
         self.min_instances = min_instances
         self.max_instances = max_instances
         self.raw_lambda = raw_lambda
+
+        # CLIP 文本编码器
+        hoi_text_token = clip.tokenize(hoi_text)          # (hoi_cnt, 77)
+        with torch.no_grad():
+            self.text_features = clip_model.encode_text(hoi_text_token)  # (hoi_cnt, 512)
+            self.text_features = self.text_features / self.text_features.norm(dim=-1, keepdim=True)
+        self.text_features = self.text_features.cuda()
+        self.vis_feat_proj = nn.Linear(repr_size, self.text_features.shape[-1])    # 将 PVIC 输出的视觉特征映射到 CLIP 文本空间中
 
     def freeze_detector(self):
         for p in self.detector.parameters():
@@ -472,7 +486,11 @@ class PViC(nn.Module):
             ).squeeze(dim=2))
         # Concatenate queries from all images in the same batch.
         query_embeds = torch.cat(query_embeds, dim=1)   # (ndec, \sigma{n}, q_dim)
-        logits = self.binary_classifier(query_embeds)
+
+        # TODO: 这里针对 verbs 进行分类，而不是针对 hoi 进行分类
+        hoi_features = self.vis_feat_proj(query_embeds)
+        hoi_features = hoi_features / hoi_features.norm(dim=-1, keepdim=True)
+        logits = torch.einsum("ijk,pk->ijp", [hoi_features, self.text_features])
 
         if self.training:
             labels = associate_with_ground_truth(
@@ -488,7 +506,7 @@ class PViC(nn.Module):
         )
         return detections
 
-def build_detector(args, obj_to_verb):
+def build_detector(args, obj_to_verb, hoi_text):
     if args.detector == "base":
         detr, _, postprocessors = build_base_detr(args)
     elif args.detector == "advanced":
@@ -525,12 +543,17 @@ def build_detector(args, obj_to_verb):
         args.hidden_dim, num_channels,
         return_layer, args.triplet_enc_layers
     )
+
+    clip_model, _clip_preprocess = clip.load("ViT-B/16", device="cpu")
+
     model = PViC(
         (detr, args.detector), postprocessors['bbox'],
         feature_head=feature_head,
         ho_matcher=ho_matcher,
         triplet_decoder=triplet_decoder,
         num_verbs=args.num_verbs,
+        hoi_text=hoi_text,
+        clip_model=clip_model,
         repr_size=args.repr_dim,
         alpha=args.alpha, gamma=args.gamma,
         box_score_thresh=args.box_score_thresh,

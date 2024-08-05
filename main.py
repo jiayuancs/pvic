@@ -23,6 +23,9 @@ from pvic import build_detector
 from utils import custom_collate, CustomisedDLE, DataFactory
 from configs import base_detector_args, advanced_detector_args
 
+# 使用文本进行分类
+from myutils.gen_sentence import get_verb_setence
+
 warnings.filterwarnings("ignore")
 
 def main(rank, args):
@@ -75,7 +78,10 @@ def main(rank, args):
         object_to_target = list(train_loader.dataset.dataset.object_to_action.values())
         args.num_verbs = 24
     
-    model = build_detector(args, object_to_target)
+    # 使用文本标签
+    normal_text, not_text = get_verb_setence("object")
+    all_text = normal_text + not_text
+    model = build_detector(args, object_to_target, normal_text)
 
     if os.path.exists(args.resume):
         print(f"=> Rank {rank}: PViC loaded from saved checkpoint {args.resume}.")
