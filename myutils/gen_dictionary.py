@@ -4,7 +4,7 @@ pattern 的官方文档：https://github.com/clips/pattern/wiki/pattern-en
 
 注意：pattern 仅支持 python2.7 或 python3.6
 
-python -m myutils.gen_text
+python -m myutils.gen_dictionary
 """
 import json
 from pattern.en import conjugate, referenced
@@ -61,6 +61,7 @@ if __name__ == "__main__":
     hoi_text_list += [
         # 自定义额外的 HOI 类别文本
         # ...
+        "hit object",
     ]
 
     verbing_dict, article_noun_dict = convert_word(hoi_text_list=hoi_text_list)

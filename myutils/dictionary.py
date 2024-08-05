@@ -316,5 +316,6 @@ OBJECT_ARTICLE_DICT = {
     "umbrella": "an umbrella",
     "vase": "a vase",
     "wine glass": "a wine glass",
-    "zebra": "a zebra"
+    "zebra": "a zebra",
+    "object": "an object"
 }
