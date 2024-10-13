@@ -27,7 +27,8 @@
                 "--eval",
                 "--resume", "checkpoints/pvic-detr-r50-hicodet.pth",
                 "--world-size", "1",
-                "--batch-size", "1"
+                "--batch-size", "1",
+                "--port", "1009",
             ],
             "env": {
                 "DETR": "base"

@@ -22,6 +22,9 @@ except ImportError:
 from tqdm import tqdm
 from collections import defaultdict
 from torch.utils.data import Dataset
+from sklearn import metrics
+from sklearn.metrics import roc_curve as Roc
+from scipy import interpolate
 
 from vcoco.vcoco import VCOCO
 from hicodet.hicodet import HICODet
@@ -131,7 +134,7 @@ class CacheTemplate(defaultdict):
             return [0., 0., .1, .1, 0.]
 
 class CustomisedDLE(DistributedLearningEngine):
-    def __init__(self, net, train_dataloader, test_dataloader, config):
+    def __init__(self, net, train_dataloader, test_dataloader, ood_dataloader, config):
         super().__init__(
             net, None, train_dataloader,
             print_interval=config.print_interval,
@@ -141,6 +144,7 @@ class CustomisedDLE(DistributedLearningEngine):
         self.config = config
         self.max_norm = config.clip_max_norm
         self.test_dataloader = test_dataloader
+        self.ood_dataloader = ood_dataloader
 
     def _on_start(self):
         # SKIP  跳过训练前的评估
@@ -294,6 +298,7 @@ class CustomisedDLE(DistributedLearningEngine):
     def test_hico(self):
         dataloader = self.test_dataloader
         net = self._state.net; net.eval()
+        assert self._world_size == 1
 
         dataset = dataloader.dataset.dataset
         associate = BoxPairAssociation(min_iou=0.5)
@@ -306,6 +311,9 @@ class CustomisedDLE(DistributedLearningEngine):
                 600, nproc=1, algorithm='11P',
                 num_gt=dataset.anno_interaction,
             )
+
+        all_label = []
+        ind_logits, ind_prob, ind_energy = [], [], []
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
             inputs = pocket.ops.relocate_to_cuda(batch[:-1])
             outputs = net(*inputs)
@@ -324,6 +332,34 @@ class CustomisedDLE(DistributedLearningEngine):
                 # Recover target box scale
                 gt_bx_h = recover_boxes(target['boxes_h'], target['size'])
                 gt_bx_o = recover_boxes(target['boxes_o'], target['size'])
+
+                # -------------- OOD 任务 ------------ #
+                # ctw = output["ctw"]
+                # atd = output["atd"]
+                # all_ctw.append(ctw)
+                # all_atd.append(atd)
+                all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
+                ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
+
+                # OOD 任务的对比方法
+                cur_ing_logits = max_logit_score(all_scores)
+                cur_ind_prob = msp_score(all_scores)
+                cur_ind_energy = energy_score(all_scores)
+                ind_logits += list(cur_ing_logits)
+                ind_prob += list(cur_ind_prob)
+                ind_energy += list(cur_ind_energy)
+
+                # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
+                ood_label = associate(
+                    (gt_bx_h.view(-1, 4),
+                    gt_bx_o.view(-1, 4)),
+                    (ood_boxes_h.view(-1, 4),
+                    ood_boxes_o.view(-1, 4)),
+                    torch.tensor(cur_ind_energy).view(-1)  # TODO: 这里应该选择哪个分数？？
+                )
+                all_label.append(ood_label)
+                assert len(ood_label) == len(cur_ing_logits)
+                # ---------------- END -------------- #    
 
                 # Associate detected pairs with ground truth pairs
                 labels = torch.zeros_like(scores)
@@ -355,11 +391,66 @@ class CustomisedDLE(DistributedLearningEngine):
             if self._rank == 0:
                 meter.append(torch.cat(scores_ddp), torch.cat(preds_ddp), torch.cat(labels_ddp))
 
-        if self._rank == 0:
-            ap = meter.eval()
-            return ap
-        else:
-            return -1
+        ood_results = {
+            "label": np.concatenate(all_label).reshape(-1, 1),
+            "MSP": np.array(ind_prob).reshape(-1, 1),
+            "MaxLogit": np.array(ind_logits).reshape(-1, 1),
+            "Energy": np.array(ind_energy).reshape(-1, 1)
+        }
+
+        return meter.eval(), ood_results
+
+    @torch.no_grad()
+    def test_hico_ood(self):
+        dataloader = self.ood_dataloader
+        net = self._state.net; net.eval()
+        assert self._world_size == 1
+
+        all_label = []
+        ind_logits, ind_prob, ind_energy = [], [], []
+        for batch in tqdm(dataloader, disable=(self._world_size != 1)):
+            inputs = pocket.ops.relocate_to_cuda(batch[:-1])
+            outputs = net(*inputs)
+            outputs = pocket.ops.relocate_to_cpu(outputs, ignore=True)
+            targets = batch[-1]
+
+            for output, target in zip(outputs, targets):
+                output = pocket.ops.relocate_to_cpu(output, ignore=True)
+                # Format detections
+                boxes = output['boxes']
+                boxes_h, boxes_o = boxes[output['pairing']].unbind(1)
+                scores = output['scores']
+                verbs = output['labels']
+                objects = output['objects']
+
+                # -------------- OOD 任务 ------------ #
+                # ctw = output["ctw"]
+                # atd = output["atd"]
+                # all_ctw.append(ctw)
+                # all_atd.append(atd)
+                all_scores = output['all_scores']
+
+                # OOD 任务的对比方法
+                cur_ing_logits = max_logit_score(all_scores)
+                cur_ind_prob = msp_score(all_scores)
+                cur_ind_energy = energy_score(all_scores)
+                ind_logits += list(cur_ing_logits)
+                ind_prob += list(cur_ind_prob)
+                ind_energy += list(cur_ind_energy)
+
+                # 所有预测的人物对都应是 OOD 类别
+                ood_label = np.zeros(all_scores.shape[0])
+                all_label.append(ood_label)
+                # ---------------- END -------------- #
+
+        ood_results = {
+            "label": np.concatenate(all_label).reshape(-1, 1),
+            "MSP": np.array(ind_prob).reshape(-1, 1),
+            "MaxLogit": np.array(ind_logits).reshape(-1, 1),
+            "Energy": np.array(ind_energy).reshape(-1, 1)
+        }
+
+        return ood_results
 
     @torch.no_grad()
     def cache_hico(self, dataloader, cache_dir='matlab'):
@@ -553,3 +644,44 @@ class CustomisedDLE(DistributedLearningEngine):
         with open(os.path.join(cache_dir, 'cache.pkl'), 'wb') as f:
             # Use protocol 2 for compatibility with Python2
             pickle.dump(all_results, f, 2)
+
+
+def _cal_auc_fpr(id_ness, labels):
+    auroc = metrics.roc_auc_score(labels, id_ness)
+    fpr,tpr,thresh = Roc(labels, id_ness, pos_label=1)
+    fpr = float(interpolate.interp1d(tpr, fpr)(0.95))
+    return auroc, fpr
+
+to_np = lambda x: x.detach().cpu().numpy()
+def max_logit_score(logits):
+    return to_np(torch.max(logits, -1)[0])
+def msp_score(logits):
+    prob = torch.softmax(logits, -1)
+    return to_np(torch.max(prob, -1)[0])
+def energy_score(logits):
+    return to_np(torch.logsumexp(logits, -1))
+
+def merge_ood_results(ood_results_lh, ood_results_rh):
+    """合并两个 OOD 任务输出的结果"""
+    all_results = {}
+    assert ood_results_lh.keys() == ood_results_rh.keys()
+    for key in ood_results_lh.keys():
+        lh_res = ood_results_lh[key]
+        rh_res = ood_results_rh[key]
+        all_results[key] = np.concatenate((lh_res, rh_res), axis=0)
+    return all_results
+
+def evaluate_ood_results(ood_results):
+    """评估 OOD 任务输出的结果"""
+    # ground-truth
+    label_key_name = "label"
+    labels = ood_results[label_key_name]  # [n, 1]
+
+    eval_results = {}
+    for key, value in ood_results.items():
+        if key == label_key_name:
+            continue
+        auroc, fpr = _cal_auc_fpr(id_ness=value, labels=labels)
+        eval_results[key] = (auroc, fpr)
+    
+    return eval_results

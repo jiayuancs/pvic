@@ -290,7 +290,12 @@ class PViC(nn.Module):
             scores = lg[x, y].sigmoid() * pr[x, y].pow(self.raw_lambda)
             detections.append(dict(
                 boxes=bx, pairing=p_inds[x], scores=scores,
-                labels=y, objects=objs[x], size=size, x=x
+                labels=y, objects=objs[x], size=size, x=x,
+                # 用于OOD评测：
+                # all_scores[i] 表示第 i 个人物对(非重复人物对)的动作类别概率分布
+                all_scores = torch.sigmoid(lg) * pr.pow(self.raw_lambda),
+                # all_pairings[i] 表示第 i 个人物对(非重复人物对)的边界框索引
+                all_pairings = p_inds
             ))
 
         return detections
