@@ -453,6 +453,166 @@ class CustomisedDLE(DistributedLearningEngine):
         return ood_results
 
     @torch.no_grad()
+    def test_hico_filtered(self):
+        dataloader = self.test_dataloader
+        net = self._state.net; net.eval()
+        assert self._world_size == 1
+
+        dataset = dataloader.dataset.dataset
+        associate = BoxPairAssociation(min_iou=0.5)
+        conversion = torch.from_numpy(np.asarray(
+            dataset.object_n_verb_to_interaction, dtype=float
+        ))
+
+        if self._rank == 0:
+            meter = DetectionAPMeter(
+                600, nproc=1, algorithm='11P',
+                num_gt=dataset.anno_interaction,
+            )
+
+        all_label = []
+        all_logit = []
+        for batch in tqdm(dataloader, disable=(self._world_size != 1)):
+            inputs = pocket.ops.relocate_to_cuda(batch[:-1])
+            outputs = net(*inputs)
+            outputs = pocket.ops.relocate_to_cpu(outputs, ignore=True)
+            targets = batch[-1]
+
+            scores_clt = []; preds_clt = []; labels_clt = []
+            for output, target in zip(outputs, targets):
+                # Format detections
+                boxes = output['boxes']
+                boxes_h, boxes_o = boxes[output['pairing']].unbind(1)
+                scores = output['scores']
+                verbs = output['labels']
+                objects = output['objects']
+                interactions = conversion[objects, verbs]
+                # Recover target box scale
+                gt_bx_h = recover_boxes(target['boxes_h'], target['size'])
+                gt_bx_o = recover_boxes(target['boxes_o'], target['size'])
+
+                # -------------- OOD 任务 ------------ #
+                # ctw = output["ctw"]
+                # atd = output["atd"]
+                # all_ctw.append(ctw)
+                # all_atd.append(atd)
+                all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
+                ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
+
+                cur_ing_logits = max_logit_score(all_scores)
+                # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
+                ood_label = associate(
+                    (gt_bx_h.view(-1, 4),
+                    gt_bx_o.view(-1, 4)),
+                    (ood_boxes_h.view(-1, 4),
+                    ood_boxes_o.view(-1, 4)),
+                    torch.tensor(cur_ing_logits).view(-1)  # TODO: 这里应该选择哪个分数？？
+                )
+                # 仅保留与 ground-truth 匹配的 人物对
+                idxs = torch.nonzero(ood_label, as_tuple=False)
+                pos_score = all_scores[idxs].squeeze(1)
+                
+                all_label.append(torch.ones_like(idxs))
+                all_logit.append(pos_score)
+                # ---------------- END -------------- #    
+
+                # Associate detected pairs with ground truth pairs
+                labels = torch.zeros_like(scores)
+                unique_hoi = interactions.unique()
+                for hoi_idx in unique_hoi:
+                    gt_idx = torch.nonzero(target['hoi'] == hoi_idx).squeeze(1)
+                    det_idx = torch.nonzero(interactions == hoi_idx).squeeze(1)
+                    if len(gt_idx):
+                        labels[det_idx] = associate(
+                            (gt_bx_h[gt_idx].view(-1, 4),
+                            gt_bx_o[gt_idx].view(-1, 4)),
+                            (boxes_h[det_idx].view(-1, 4),
+                            boxes_o[det_idx].view(-1, 4)),
+                            scores[det_idx].view(-1)
+                        )
+
+                scores_clt.append(scores)
+                preds_clt.append(interactions)
+                labels_clt.append(labels)
+            # Collate results into one tensor
+            scores_clt = torch.cat(scores_clt)
+            preds_clt = torch.cat(preds_clt)
+            labels_clt = torch.cat(labels_clt)
+            # Gather data from all processes
+            scores_ddp = pocket.utils.all_gather(scores_clt)
+            preds_ddp = pocket.utils.all_gather(preds_clt)
+            labels_ddp = pocket.utils.all_gather(labels_clt)
+
+            if self._rank == 0:
+                meter.append(torch.cat(scores_ddp), torch.cat(preds_ddp), torch.cat(labels_ddp))
+
+        ood_results = {
+            "label": torch.cat(all_label).squeeze(-1).numpy(),
+            "logit": torch.cat(all_logit).numpy(),
+        }
+
+        return meter.eval(), ood_results
+
+    @torch.no_grad()
+    def test_hico_ood_filtered(self):
+        dataloader = self.ood_dataloader
+        net = self._state.net; net.eval()
+        assert self._world_size == 1
+
+        associate = BoxPairAssociation(min_iou=0.5)
+        all_label = []
+        all_logit = []
+        for batch in tqdm(dataloader, disable=(self._world_size != 1)):
+            inputs = pocket.ops.relocate_to_cuda(batch[:-1])
+            outputs = net(*inputs)
+            outputs = pocket.ops.relocate_to_cpu(outputs, ignore=True)
+            targets = batch[-1]
+
+            for output, target in zip(outputs, targets):
+                output = pocket.ops.relocate_to_cpu(output, ignore=True)
+                # Format detections
+                boxes = output['boxes']
+                boxes_h, boxes_o = boxes[output['pairing']].unbind(1)
+                scores = output['scores']
+                verbs = output['labels']
+                objects = output['objects']
+                # Recover target box scale
+                gt_bx_h = recover_boxes(target['boxes_h'], target['size'])
+                gt_bx_o = recover_boxes(target['boxes_o'], target['size'])
+
+                # -------------- OOD 任务 ------------ #
+                # ctw = output["ctw"]
+                # atd = output["atd"]
+                # all_ctw.append(ctw)
+                # all_atd.append(atd)
+                all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
+                ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
+
+                cur_ing_logits = max_logit_score(all_scores)
+                # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
+                ood_label = associate(
+                    (gt_bx_h.view(-1, 4),
+                    gt_bx_o.view(-1, 4)),
+                    (ood_boxes_h.view(-1, 4),
+                    ood_boxes_o.view(-1, 4)),
+                    torch.tensor(cur_ing_logits).view(-1)  # TODO: 这里应该选择哪个分数？？
+                )
+                # 仅保留与 ground-truth 匹配的 人物对
+                idxs = torch.nonzero(ood_label, as_tuple=False)
+                pos_score = all_scores[idxs].squeeze(1)
+                
+                all_label.append(torch.zeros_like(idxs))
+                all_logit.append(pos_score)
+                # ---------------- END -------------- #     
+
+        ood_results = {
+            "label": torch.cat(all_label).squeeze(-1).numpy(),
+            "logit": torch.cat(all_logit).numpy(),
+        }
+
+        return ood_results
+
+    @torch.no_grad()
     def cache_hico(self, dataloader, cache_dir='matlab'):
         net = self._state.net
         net.eval()
