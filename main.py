@@ -125,6 +125,9 @@ def main(rank, args):
 
             rare = trainset.dataset.rare
             non_rare = trainset.dataset.non_rare
+            all_map = ap.mean()
+            rare_map = ap[rare].mean()
+            none_rare_map = ap[non_rare].mean()
             print(
                 f"The mAP is {ap.mean():.4f},"
                 f" rare: {ap[rare].mean():.4f},"
@@ -136,11 +139,26 @@ def main(rank, args):
             ood_results_ood_part = engine.test_hico_ood_filtered()
 
             # 合并 OOD 检测结果
-            all_ood_results = merge_ood_results(ood_results_lh=ood_results_id_part, ood_results_rh=ood_results_ood_part)
+            # all_ood_results = merge_ood_results(ood_results_lh=ood_results_id_part, ood_results_rh=ood_results_ood_part)
 
-            res_save_path = "all_ood_results.pkl"
+            save_data = {
+                "id_part": ood_results_id_part.results,
+                "ood_part": ood_results_ood_part.results,
+                "hoi_performance": {
+                    "ap": ap,
+                    "mAP": all_map,
+                    "rare mAP": rare_map,
+                    "none-rare mAP": none_rare_map,
+                },
+                "metadata": {
+                    "model": "PVIC",
+                    "description": "just for test"
+                }
+            }
+
+            res_save_path = "pvic_ood_results.pkl"
             with open(res_save_path, 'wb') as f:
-                pickle.dump(all_ood_results, f)
+                pickle.dump(save_data, f)
             print(f"OOD detection results saved: {res_save_path}")
             return
 

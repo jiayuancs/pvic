@@ -35,6 +35,7 @@ from pocket.utils import DetectionAPMeter, BoxPairAssociation, AveragePrecisionM
 
 from ops import recover_boxes
 from detr.datasets import transforms as T
+from ood_cache import OODDetResultTemplate
 
 def custom_collate(batch):
     images = []
@@ -470,8 +471,9 @@ class CustomisedDLE(DistributedLearningEngine):
                 num_gt=dataset.anno_interaction,
             )
 
-        all_label = []
-        all_logit = []
+        # all_label = []
+        # all_logit = []
+        all_ood_results = OODDetResultTemplate()
         # all_missing_cnt = 0
         # all_gt_cnt = 0
         # all_pred_cnt = 0
@@ -502,9 +504,19 @@ class CustomisedDLE(DistributedLearningEngine):
                 all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
                 ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
 
-                all_label.append(torch.ones(all_scores.shape[0], 1))
-                all_logit.append(all_scores)
-
+                # all_label.append(torch.ones(all_scores.shape[0], 1))
+                # all_logit.append(all_scores)
+                all_ood_results.append(
+                    image_id=0,   # TODO: 添加图片唯一编码
+                    boxes=boxes,
+                    human_box_idx=output['all_pairings'][:,0],
+                    object_box_idx=output['all_pairings'][:,1],
+                    hoi_logits=all_scores,
+                    gt_is_id=True,
+                    gt_human_boxes=gt_bx_h,
+                    gt_object_boxes=gt_bx_o,
+                    ood_scores={}
+                )
                 # cur_ing_logits = max_logit_score(all_scores)
                 # # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
                 # ood_label = associate(
@@ -562,10 +574,10 @@ class CustomisedDLE(DistributedLearningEngine):
             if self._rank == 0:
                 meter.append(torch.cat(scores_ddp), torch.cat(preds_ddp), torch.cat(labels_ddp))
 
-        ood_results = {
-            "label": torch.cat(all_label).squeeze(-1).numpy(),
-            "logit": torch.cat(all_logit).numpy(),
-        }
+        # ood_results = {
+        #     "label": torch.cat(all_label).squeeze(-1).numpy(),
+        #     "logit": torch.cat(all_logit).numpy(),
+        # }
         # print(f"ID dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
         # print(f"ID all_pred_cnt = {all_pred_cnt}")
         # ap, rec = meter.compute_ap_for_each((
@@ -573,7 +585,7 @@ class CustomisedDLE(DistributedLearningEngine):
         #             torch.tensor([0.3, 0.2, 0.3, 0.4, 0.3, 0.19, ]), torch.tensor([1,0,0,0,0,1]),
         #             AveragePrecisionMeter.compute_per_class_ap_with_11_point_interpolation
         #         ))
-        return meter.eval(), ood_results
+        return meter.eval(), all_ood_results
 
     @torch.no_grad()
     def test_hico_ood_filtered(self):
@@ -581,9 +593,10 @@ class CustomisedDLE(DistributedLearningEngine):
         net = self._state.net; net.eval()
         assert self._world_size == 1
 
-        associate = BoxPairAssociation(min_iou=0.5)
-        all_label = []
-        all_logit = []
+        # associate = BoxPairAssociation(min_iou=0.5)
+        # all_label = []
+        # all_logit = []
+        all_ood_results = OODDetResultTemplate()
         # all_missing_cnt = 0
         # all_gt_cnt = 0
         # all_pred_cnt = 0
@@ -613,9 +626,19 @@ class CustomisedDLE(DistributedLearningEngine):
                 all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
                 ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
 
-                all_label.append(torch.zeros(all_scores.shape[0], 1))
-                all_logit.append(all_scores)
-
+                # all_label.append(torch.zeros(all_scores.shape[0], 1))
+                # all_logit.append(all_scores)
+                all_ood_results.append(
+                    image_id=0,   # TODO: 添加图片唯一编码
+                    boxes=boxes,
+                    human_box_idx=output['all_pairings'][:,0],
+                    object_box_idx=output['all_pairings'][:,1],
+                    hoi_logits=all_scores,
+                    gt_is_id=False,
+                    gt_human_boxes=gt_bx_h,
+                    gt_object_boxes=gt_bx_o,
+                    ood_scores={}
+                )
                 # cur_ing_logits = max_logit_score(all_scores)
                 # # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
                 # ood_label = associate(
@@ -643,13 +666,13 @@ class CustomisedDLE(DistributedLearningEngine):
                 #     all_logit.append(torch.ones(missing_cnt, 117))
                 # ---------------- END -------------- #     
 
-        ood_results = {
-            "label": torch.cat(all_label).squeeze(-1).numpy(),
-            "logit": torch.cat(all_logit).numpy(),
-        }
+        # ood_results = {
+        #     "label": torch.cat(all_label).squeeze(-1).numpy(),
+        #     "logit": torch.cat(all_logit).numpy(),
+        # }
         # print(f"OOD dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
         # print(f"OOD all_pred_cnt = {all_pred_cnt}")
-        return ood_results
+        return all_ood_results
 
     @torch.no_grad()
     def cache_hico(self, dataloader, cache_dir='matlab'):
