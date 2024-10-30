@@ -472,6 +472,9 @@ class CustomisedDLE(DistributedLearningEngine):
 
         all_label = []
         all_logit = []
+        all_missing_cnt = 0
+        all_gt_cnt = 0
+        all_pred_cnt = 0
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
             inputs = pocket.ops.relocate_to_cuda(batch[:-1])
             outputs = net(*inputs)
@@ -514,6 +517,16 @@ class CustomisedDLE(DistributedLearningEngine):
                 
                 all_label.append(torch.ones_like(idxs))
                 all_logit.append(pos_score)
+                # 未匹配的人物对
+                missing_cnt = gt_bx_h.shape[0] - idxs.shape[0]
+                assert missing_cnt >= 0
+                all_missing_cnt += missing_cnt
+                all_gt_cnt += gt_bx_h.shape[0]
+                all_pred_cnt += ood_boxes_h.view(-1, 4).shape[0]
+                # if missing_cnt > 0:
+                #     assert scores.min() >= 0
+                #     all_label.append(torch.ones(missing_cnt, 1))
+                #     all_logit.append(torch.zeros(missing_cnt, 117))
                 # ---------------- END -------------- #    
 
                 # Associate detected pairs with ground truth pairs
@@ -550,7 +563,8 @@ class CustomisedDLE(DistributedLearningEngine):
             "label": torch.cat(all_label).squeeze(-1).numpy(),
             "logit": torch.cat(all_logit).numpy(),
         }
-
+        print(f"ID dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
+        print(f"ID all_pred_cnt = {all_pred_cnt}")
         return meter.eval(), ood_results
 
     @torch.no_grad()
@@ -562,6 +576,9 @@ class CustomisedDLE(DistributedLearningEngine):
         associate = BoxPairAssociation(min_iou=0.5)
         all_label = []
         all_logit = []
+        all_missing_cnt = 0
+        all_gt_cnt = 0
+        all_pred_cnt = 0
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
             inputs = pocket.ops.relocate_to_cuda(batch[:-1])
             outputs = net(*inputs)
@@ -603,13 +620,24 @@ class CustomisedDLE(DistributedLearningEngine):
                 
                 all_label.append(torch.zeros_like(idxs))
                 all_logit.append(pos_score)
+                # 未匹配的人物对
+                missing_cnt = gt_bx_h.shape[0] - idxs.shape[0]
+                assert missing_cnt >= 0
+                all_missing_cnt += missing_cnt
+                all_gt_cnt += gt_bx_h.shape[0]
+                all_pred_cnt += ood_boxes_h.view(-1, 4).shape[0]
+                # if missing_cnt > 0:
+                #     assert scores.min() <= 1
+                #     all_label.append(torch.zeros(missing_cnt, 1))
+                #     all_logit.append(torch.ones(missing_cnt, 117))
                 # ---------------- END -------------- #     
 
         ood_results = {
             "label": torch.cat(all_label).squeeze(-1).numpy(),
             "logit": torch.cat(all_logit).numpy(),
         }
-
+        print(f"OOD dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
+        print(f"OOD all_pred_cnt = {all_pred_cnt}")
         return ood_results
 
     @torch.no_grad()
