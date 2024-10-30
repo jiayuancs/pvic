@@ -61,3 +61,14 @@ outptu = {
 python eval_ood.py --file all_ood_results.pkl
 ```
 
+结果：
+
+```txt
+ID/OOD: 19498/11795
+MSP: auroc=62.42, fpr=94.44
+MaxLogit: auroc=62.44, fpr=94.42
+Energy: auroc=62.61, fpr=93.68
+```
+
+#### release v1.1.1
+

@@ -31,7 +31,7 @@ from hicodet.hicodet import HICODet
 
 import pocket
 from pocket.core import DistributedLearningEngine
-from pocket.utils import DetectionAPMeter, BoxPairAssociation
+from pocket.utils import DetectionAPMeter, BoxPairAssociation, AveragePrecisionMeter
 
 from ops import recover_boxes
 from detr.datasets import transforms as T
@@ -472,9 +472,9 @@ class CustomisedDLE(DistributedLearningEngine):
 
         all_label = []
         all_logit = []
-        all_missing_cnt = 0
-        all_gt_cnt = 0
-        all_pred_cnt = 0
+        # all_missing_cnt = 0
+        # all_gt_cnt = 0
+        # all_pred_cnt = 0
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
             inputs = pocket.ops.relocate_to_cuda(batch[:-1])
             outputs = net(*inputs)
@@ -502,28 +502,31 @@ class CustomisedDLE(DistributedLearningEngine):
                 all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
                 ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
 
-                cur_ing_logits = max_logit_score(all_scores)
-                # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
-                ood_label = associate(
-                    (gt_bx_h.view(-1, 4),
-                    gt_bx_o.view(-1, 4)),
-                    (ood_boxes_h.view(-1, 4),
-                    ood_boxes_o.view(-1, 4)),
-                    torch.tensor(cur_ing_logits).view(-1)  # TODO: 这里应该选择哪个分数？？
-                )
-                # 仅保留与 ground-truth 匹配的 人物对
-                idxs = torch.nonzero(ood_label, as_tuple=False)
-                pos_score = all_scores[idxs].squeeze(1)
+                all_label.append(torch.ones(all_scores.shape[0], 1))
+                all_logit.append(all_scores)
+
+                # cur_ing_logits = max_logit_score(all_scores)
+                # # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
+                # ood_label = associate(
+                #     (gt_bx_h.view(-1, 4),
+                #     gt_bx_o.view(-1, 4)),
+                #     (ood_boxes_h.view(-1, 4),
+                #     ood_boxes_o.view(-1, 4)),
+                #     torch.tensor(cur_ing_logits).view(-1)  # TODO: 这里应该选择哪个分数？？
+                # )
+                # # 仅保留与 ground-truth 匹配的 人物对
+                # idxs = torch.nonzero(ood_label, as_tuple=False)
+                # pos_score = all_scores[idxs].squeeze(1)
                 
-                all_label.append(torch.ones_like(idxs))
-                all_logit.append(pos_score)
-                # 未匹配的人物对
-                missing_cnt = gt_bx_h.shape[0] - idxs.shape[0]
-                assert missing_cnt >= 0
-                all_missing_cnt += missing_cnt
-                all_gt_cnt += gt_bx_h.shape[0]
-                all_pred_cnt += ood_boxes_h.view(-1, 4).shape[0]
-                # if missing_cnt > 0:
+                # all_label.append(torch.ones_like(idxs))
+                # all_logit.append(pos_score)
+                # # 未匹配的人物对
+                # missing_cnt = gt_bx_h.shape[0] - idxs.shape[0]
+                # assert missing_cnt >= 0
+                # all_missing_cnt += missing_cnt
+                # all_gt_cnt += gt_bx_h.shape[0]
+                # all_pred_cnt += ood_boxes_h.view(-1, 4).shape[0]
+                # # if missing_cnt > 0:
                 #     assert scores.min() >= 0
                 #     all_label.append(torch.ones(missing_cnt, 1))
                 #     all_logit.append(torch.zeros(missing_cnt, 117))
@@ -563,8 +566,13 @@ class CustomisedDLE(DistributedLearningEngine):
             "label": torch.cat(all_label).squeeze(-1).numpy(),
             "logit": torch.cat(all_logit).numpy(),
         }
-        print(f"ID dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
-        print(f"ID all_pred_cnt = {all_pred_cnt}")
+        # print(f"ID dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
+        # print(f"ID all_pred_cnt = {all_pred_cnt}")
+        # ap, rec = meter.compute_ap_for_each((
+        #             6, 92,
+        #             torch.tensor([0.3, 0.2, 0.3, 0.4, 0.3, 0.19, ]), torch.tensor([1,0,0,0,0,1]),
+        #             AveragePrecisionMeter.compute_per_class_ap_with_11_point_interpolation
+        #         ))
         return meter.eval(), ood_results
 
     @torch.no_grad()
@@ -576,9 +584,9 @@ class CustomisedDLE(DistributedLearningEngine):
         associate = BoxPairAssociation(min_iou=0.5)
         all_label = []
         all_logit = []
-        all_missing_cnt = 0
-        all_gt_cnt = 0
-        all_pred_cnt = 0
+        # all_missing_cnt = 0
+        # all_gt_cnt = 0
+        # all_pred_cnt = 0
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
             inputs = pocket.ops.relocate_to_cuda(batch[:-1])
             outputs = net(*inputs)
@@ -605,27 +613,30 @@ class CustomisedDLE(DistributedLearningEngine):
                 all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
                 ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
 
-                cur_ing_logits = max_logit_score(all_scores)
-                # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
-                ood_label = associate(
-                    (gt_bx_h.view(-1, 4),
-                    gt_bx_o.view(-1, 4)),
-                    (ood_boxes_h.view(-1, 4),
-                    ood_boxes_o.view(-1, 4)),
-                    torch.tensor(cur_ing_logits).view(-1)  # TODO: 这里应该选择哪个分数？？
-                )
-                # 仅保留与 ground-truth 匹配的 人物对
-                idxs = torch.nonzero(ood_label, as_tuple=False)
-                pos_score = all_scores[idxs].squeeze(1)
+                all_label.append(torch.zeros(all_scores.shape[0], 1))
+                all_logit.append(all_scores)
+
+                # cur_ing_logits = max_logit_score(all_scores)
+                # # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
+                # ood_label = associate(
+                #     (gt_bx_h.view(-1, 4),
+                #     gt_bx_o.view(-1, 4)),
+                #     (ood_boxes_h.view(-1, 4),
+                #     ood_boxes_o.view(-1, 4)),
+                #     torch.tensor(cur_ing_logits).view(-1)  # TODO: 这里应该选择哪个分数？？
+                # )
+                # # 仅保留与 ground-truth 匹配的 人物对
+                # idxs = torch.nonzero(ood_label, as_tuple=False)
+                # pos_score = all_scores[idxs].squeeze(1)
                 
-                all_label.append(torch.zeros_like(idxs))
-                all_logit.append(pos_score)
-                # 未匹配的人物对
-                missing_cnt = gt_bx_h.shape[0] - idxs.shape[0]
-                assert missing_cnt >= 0
-                all_missing_cnt += missing_cnt
-                all_gt_cnt += gt_bx_h.shape[0]
-                all_pred_cnt += ood_boxes_h.view(-1, 4).shape[0]
+                # all_label.append(torch.zeros_like(idxs))
+                # all_logit.append(pos_score)
+                # # 未匹配的人物对
+                # missing_cnt = gt_bx_h.shape[0] - idxs.shape[0]
+                # assert missing_cnt >= 0
+                # all_missing_cnt += missing_cnt
+                # all_gt_cnt += gt_bx_h.shape[0]
+                # all_pred_cnt += ood_boxes_h.view(-1, 4).shape[0]
                 # if missing_cnt > 0:
                 #     assert scores.min() <= 1
                 #     all_label.append(torch.zeros(missing_cnt, 1))
@@ -636,8 +647,8 @@ class CustomisedDLE(DistributedLearningEngine):
             "label": torch.cat(all_label).squeeze(-1).numpy(),
             "logit": torch.cat(all_logit).numpy(),
         }
-        print(f"OOD dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
-        print(f"OOD all_pred_cnt = {all_pred_cnt}")
+        # print(f"OOD dataset(missing/gt): {all_missing_cnt}/{all_gt_cnt}")
+        # print(f"OOD all_pred_cnt = {all_pred_cnt}")
         return ood_results
 
     @torch.no_grad()
