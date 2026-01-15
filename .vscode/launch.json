@@ -31,7 +31,8 @@
                 "--port", "1009",
             ],
             "env": {
-                "DETR": "base"
+                "DETR": "base",
+                "CUDA_VISIBLE_DEVICES": "6"
             },
         }
     ]

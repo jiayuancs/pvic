@@ -404,6 +404,8 @@ class CustomisedDLE(DistributedLearningEngine):
         net = self._state.net; net.eval()
         assert self._world_size == 1
 
+        associate = BoxPairAssociation(min_iou=0.5)
+
         all_label = []
         all_logit = []
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
