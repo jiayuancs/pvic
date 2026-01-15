@@ -1,6 +1,3 @@
-[submodule "hicodet"]
-	path = hicodet
-	url = https://github.com/fredzzhang/hicodet.git
 [submodule "vcoco"]
 	path = vcoco
 	url = https://github.com/fredzzhang/vcoco.git

@@ -313,7 +313,7 @@ class CustomisedDLE(DistributedLearningEngine):
             )
 
         all_label = []
-        ind_logits, ind_prob, ind_energy = [], [], []
+        all_logit = []
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
             inputs = pocket.ops.relocate_to_cuda(batch[:-1])
             outputs = net(*inputs)
@@ -341,24 +341,24 @@ class CustomisedDLE(DistributedLearningEngine):
                 all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
                 ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
 
-                # OOD 任务的对比方法
-                cur_ing_logits = max_logit_score(all_scores)
-                cur_ind_prob = msp_score(all_scores)
-                cur_ind_energy = energy_score(all_scores)
-                ind_logits += list(cur_ing_logits)
-                ind_prob += list(cur_ind_prob)
-                ind_energy += list(cur_ind_energy)
-
                 # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
                 ood_label = associate(
                     (gt_bx_h.view(-1, 4),
                     gt_bx_o.view(-1, 4)),
                     (ood_boxes_h.view(-1, 4),
                     ood_boxes_o.view(-1, 4)),
-                    torch.tensor(cur_ind_energy).view(-1)  # TODO: 这里应该选择哪个分数？？
+                    None   # 对于重复匹配的人物对，仅保留 IoU 最大的人物对
                 )
-                all_label.append(ood_label)
-                assert len(ood_label) == len(cur_ing_logits)
+                # 仅保留与 ground-truth 匹配的 人物对
+                idxs = torch.nonzero(ood_label, as_tuple=False)
+                pos_score = all_scores[idxs].squeeze(1)
+
+                # 匹配的人物对
+                all_label.append(torch.ones_like(idxs))
+                all_logit.append(pos_score)
+
+                # all_label.append(ood_label)
+                # assert len(ood_label) == len(cur_ing_logits)
                 # ---------------- END -------------- #    
 
                 # Associate detected pairs with ground truth pairs
@@ -391,14 +391,12 @@ class CustomisedDLE(DistributedLearningEngine):
             if self._rank == 0:
                 meter.append(torch.cat(scores_ddp), torch.cat(preds_ddp), torch.cat(labels_ddp))
 
-        ood_results = {
-            "label": np.concatenate(all_label).reshape(-1, 1),
-            "MSP": np.array(ind_prob).reshape(-1, 1),
-            "MaxLogit": np.array(ind_logits).reshape(-1, 1),
-            "Energy": np.array(ind_energy).reshape(-1, 1)
+        match_ood_results = {
+            "label": torch.cat(all_label).squeeze(-1).numpy(),
+            "logit": torch.cat(all_logit).numpy()
         }
 
-        return meter.eval(), ood_results
+        return meter.eval(), match_ood_results
 
     @torch.no_grad()
     def test_hico_ood(self):
@@ -407,7 +405,7 @@ class CustomisedDLE(DistributedLearningEngine):
         assert self._world_size == 1
 
         all_label = []
-        ind_logits, ind_prob, ind_energy = [], [], []
+        all_logit = []
         for batch in tqdm(dataloader, disable=(self._world_size != 1)):
             inputs = pocket.ops.relocate_to_cuda(batch[:-1])
             outputs = net(*inputs)
@@ -423,34 +421,41 @@ class CustomisedDLE(DistributedLearningEngine):
                 verbs = output['labels']
                 objects = output['objects']
 
+                # Recover target box scale
+                gt_bx_h = recover_boxes(target['boxes_h'], target['size'])
+                gt_bx_o = recover_boxes(target['boxes_o'], target['size'])
+
                 # -------------- OOD 任务 ------------ #
                 # ctw = output["ctw"]
                 # atd = output["atd"]
                 # all_ctw.append(ctw)
                 # all_atd.append(atd)
-                all_scores = output['all_scores']
+                all_scores = output['all_scores']   # [ho_pairs_cnt, 117]
+                ood_boxes_h, ood_boxes_o = boxes[output['all_pairings']].unbind(1)
 
-                # OOD 任务的对比方法
-                cur_ing_logits = max_logit_score(all_scores)
-                cur_ind_prob = msp_score(all_scores)
-                cur_ind_energy = energy_score(all_scores)
-                ind_logits += list(cur_ing_logits)
-                ind_prob += list(cur_ind_prob)
-                ind_energy += list(cur_ind_energy)
+                # 匹配边界框，得到 ground-truth 标签(1 表示 ID 人物对，0 表示 OOD 人物对)
+                ood_label = associate(
+                    (gt_bx_h.view(-1, 4),
+                    gt_bx_o.view(-1, 4)),
+                    (ood_boxes_h.view(-1, 4),
+                    ood_boxes_o.view(-1, 4)),
+                    None   # 对于重复匹配的人物对，仅保留 IoU 最大的人物对
+                )
+                # 仅保留与 ground-truth 匹配的 人物对
+                idxs = torch.nonzero(ood_label, as_tuple=False)
+                pos_score = all_scores[idxs].squeeze(1)
 
-                # 所有预测的人物对都应是 OOD 类别
-                ood_label = np.zeros(all_scores.shape[0])
-                all_label.append(ood_label)
+                # 匹配的人物对
+                all_label.append(torch.zeros_like(idxs))
+                all_logit.append(pos_score)
                 # ---------------- END -------------- #
 
-        ood_results = {
-            "label": np.concatenate(all_label).reshape(-1, 1),
-            "MSP": np.array(ind_prob).reshape(-1, 1),
-            "MaxLogit": np.array(ind_logits).reshape(-1, 1),
-            "Energy": np.array(ind_energy).reshape(-1, 1)
+        match_ood_results = {
+            "label": torch.cat(all_label).squeeze(-1).numpy(),
+            "logit": torch.cat(all_logit).numpy()
         }
 
-        return ood_results
+        return match_ood_results
 
     @torch.no_grad()
     def cache_hico(self, dataloader, cache_dir='matlab'):

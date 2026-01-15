@@ -23,6 +23,7 @@ from pvic import build_detector
 from utils import custom_collate, CustomisedDLE, DataFactory, merge_ood_results, evaluate_ood_results
 from configs import base_detector_args, advanced_detector_args
 from utils_ood_dataset import DataFactoryOOD
+from eval_ood import eval_ood
 
 warnings.filterwarnings("ignore")
 
@@ -120,7 +121,7 @@ def main(rank, args):
         else:
             assert dist.get_world_size() == 1
             print(f"eval on HICO-DET testset...")
-            ap, ood_results_id_part = engine.test_hico()
+            ap, match_ood_results_id_part = engine.test_hico()
 
             rare = trainset.dataset.rare
             non_rare = trainset.dataset.non_rare
@@ -132,16 +133,11 @@ def main(rank, args):
 
             # ood_loader 是与 HICO-DET 仅 object 类别相同（verb 类别完全不同）的数据集
             print(f"eval on SWIG-HOI oodset...")
-            ood_results_ood_part = engine.test_hico_ood()
+            match_ood_results_ood_part = engine.test_hico_ood()
 
             # 评测 OOD 任务的性能
-            all_ood_results = merge_ood_results(ood_results_lh=ood_results_id_part, ood_results_rh=ood_results_ood_part)
-            pos_cnt = np.count_nonzero(all_ood_results['label'])
-            neg_cnt = all_ood_results['label'].shape[0] - pos_cnt
-            print(f"ID/OOD: {pos_cnt}/{neg_cnt}")
-            ood_performance = evaluate_ood_results(all_ood_results)
-            for metric_name, (auroc, fpr) in ood_performance.items():
-                print(f"{metric_name}: auroc={auroc*100:.2f}, fpr={fpr*100:.2f}")
+            all_match_ood_results = merge_ood_results(ood_results_lh=match_ood_results_id_part, ood_results_rh=match_ood_results_ood_part)
+            ood_performance = eval_ood(all_match_ood_results)
             return
 
     model.freeze_detector()
