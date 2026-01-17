@@ -295,7 +295,8 @@ class PViC(nn.Module):
                 # all_scores[i] 表示第 i 个人物对(非重复人物对)的动作类别概率分布
                 all_scores = torch.sigmoid(lg) * pr.pow(self.raw_lambda),
                 # all_pairings[i] 表示第 i 个人物对(非重复人物对)的边界框索引
-                all_pairings = p_inds
+                all_pairings = p_inds,
+                all_objects = objs
             ))
 
         return detections
